@@ -294,6 +294,7 @@ static struct usb_gadget_strings *acm_strings[] = {
 	NULL,
 };
 
+
 /*-------------------------------------------------------------------------*/
 
 /* ACM control ... data handling is delegated to tty library code.
@@ -612,19 +613,38 @@ acm_bind(struct usb_configuration *c, struct usb_function *f)
 	struct usb_string	*us;
 	int			status;
 	struct usb_ep		*ep;
+	struct f_serial_opts *opts;
+	int string_count;
 
 	/* REVISIT might want instance-specific strings to help
 	 * distinguish instances ...
 	 */
 
-	/* maybe allocate device-global string IDs, and patch descriptors */
-	us = usb_gstrings_attach(cdev, acm_strings,
-			ARRAY_SIZE(acm_string_defs));
+	opts = container_of(f->fi, struct f_serial_opts, func_inst);
+
+	string_count = ARRAY_SIZE(acm_string_defs);
+	if (opts->ifunction[0]) {
+		// iFunction configured. Let this string override the builtin strings, by setting it in the IAD only.
+		string_count = 2;
+		acm_string_defs[0].s = opts->ifunction;
+		acm_string_defs[1].s = NULL;
+		acm_string_defs[1].id = 0;
+	}
+
+	// maybe allocate device-global string IDs, and patch descriptors
+	us = usb_gstrings_attach(cdev, acm_strings, string_count);
 	if (IS_ERR(us))
 		return PTR_ERR(us);
-	acm_control_interface_desc.iInterface = us[ACM_CTRL_IDX].id;
-	acm_data_interface_desc.iInterface = us[ACM_DATA_IDX].id;
-	acm_iad_descriptor.iFunction = us[ACM_IAD_IDX].id;
+	if (opts->ifunction[0]) {
+		acm_control_interface_desc.iInterface = 0;
+		acm_data_interface_desc.iInterface = 0;
+		acm_iad_descriptor.iFunction = us[0].id;
+	}
+	else {
+		acm_control_interface_desc.iInterface = us[ACM_CTRL_IDX].id;
+		acm_data_interface_desc.iInterface = us[ACM_DATA_IDX].id;
+		acm_iad_descriptor.iFunction = us[ACM_IAD_IDX].id;
+	}
 
 	/* allocate instance-specific interface IDs, and patch descriptors */
 	status = usb_interface_id(c, f);
@@ -748,6 +768,8 @@ static struct usb_function *acm_alloc_func(struct usb_function_instance *fi)
 	if (!acm)
 		return ERR_PTR(-ENOMEM);
 
+	opts = container_of(fi, struct f_serial_opts, func_inst);
+
 	spin_lock_init(&acm->lock);
 
 	acm->port.connect = acm_connect;
@@ -755,14 +777,14 @@ static struct usb_function *acm_alloc_func(struct usb_function_instance *fi)
 	acm->port.send_break = acm_send_break;
 
 	acm->port.func.name = "acm";
-	acm->port.func.strings = acm_strings;
+
+    acm->port.func.strings = acm_strings;
 	/* descriptors are per-instance copies */
 	acm->port.func.bind = acm_bind;
 	acm->port.func.set_alt = acm_set_alt;
 	acm->port.func.setup = acm_setup;
 	acm->port.func.disable = acm_disable;
 
-	opts = container_of(fi, struct f_serial_opts, func_inst);
 	acm->port_num = opts->port_num;
 	acm->port.func.unbind = acm_unbind;
 	acm->port.func.free_func = acm_free_func;
@@ -814,11 +836,30 @@ static ssize_t f_acm_port_num_show(struct config_item *item, char *page)
 
 CONFIGFS_ATTR_RO(f_acm_, port_num);
 
+static ssize_t f_acm_ifunction_show(struct config_item *item, char *page)
+{
+	return scnprintf(page, PAGE_SIZE, "%s\n", to_f_serial_opts(item)->ifunction);
+}
+
+static ssize_t f_acm_ifunction_store(struct config_item *item,
+				       const char *page, size_t len)
+{
+	struct f_serial_opts *opts = to_f_serial_opts(item);
+	ssize_t ret = strscpy(opts->ifunction, page, sizeof(opts->ifunction));
+	char *nl = strchr(opts->ifunction, '\n');
+	if (nl) *nl = '\0';
+	return ret;
+}
+
+CONFIGFS_ATTR(f_acm_, ifunction);
+
+
 static struct configfs_attribute *acm_attrs[] = {
 #ifdef CONFIG_U_SERIAL_CONSOLE
 	&f_acm_attr_console,
 #endif
 	&f_acm_attr_port_num,
+	&f_acm_attr_ifunction,
 	NULL,
 };
 
@@ -845,6 +886,7 @@ static struct usb_function_instance *acm_alloc_instance(void)
 	opts = kzalloc(sizeof(*opts), GFP_KERNEL);
 	if (!opts)
 		return ERR_PTR(-ENOMEM);
+
 	opts->func_inst.free_func_inst = acm_free_instance;
 	ret = gserial_alloc_line(&opts->port_num);
 	if (ret) {
