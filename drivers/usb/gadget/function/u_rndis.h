@@ -31,6 +31,8 @@ struct f_rndis_opts {
 	u8				subclass;
 	u8				protocol;
 
+	char			ifunction[96];
+
 	/*
 	 * Read/write access to configfs attributes is handled by configfs.
 	 *

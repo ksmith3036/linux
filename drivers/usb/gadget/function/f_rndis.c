@@ -675,6 +675,8 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
 	struct usb_ep		*ep;
 
 	struct f_rndis_opts *rndis_opts;
+	bool   customClass, customSubclass, customProtocol;
+	int string_count;
 
 	if (!can_support_rndis(c))
 		return -EINVAL;
@@ -689,6 +691,10 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
 		f->os_desc_n = 1;
 		f->os_desc_table[0].os_desc = &rndis_opts->rndis_os_desc;
 	}
+
+	customClass = rndis_iad_descriptor.bFunctionClass != rndis_opts->class;
+	customSubclass = rndis_iad_descriptor.bFunctionSubClass != rndis_opts->subclass;
+	customProtocol = rndis_iad_descriptor.bFunctionProtocol != rndis_opts->protocol;
 
 	rndis_iad_descriptor.bFunctionClass = rndis_opts->class;
 	rndis_iad_descriptor.bFunctionSubClass = rndis_opts->subclass;
@@ -709,15 +715,33 @@ rndis_bind(struct usb_configuration *c, struct usb_function *f)
 		rndis_opts->bound = true;
 	}
 
-	us = usb_gstrings_attach(cdev, rndis_strings,
-				 ARRAY_SIZE(rndis_string_defs));
-	if (IS_ERR(us)) {
-		status = PTR_ERR(us);
-		goto fail;
+	string_count = ARRAY_SIZE(rndis_string_defs);
+	if (rndis_opts->ifunction[0]) {
+		// iFunction configured. Let this string override the builtin strings, by setting it in the IAD only.
+		string_count = 1;
+		rndis_string_defs[0].s = rndis_opts->ifunction;
+		rndis_string_defs[1].s = NULL;
+		rndis_string_defs[1].id = 0;
 	}
-	rndis_control_intf.iInterface = us[0].id;
-	rndis_data_intf.iInterface = us[1].id;
-	rndis_iad_descriptor.iFunction = us[2].id;
+
+	// maybe allocate device-global string IDs, and patch descriptors
+	us = usb_gstrings_attach(cdev, rndis_strings, string_count);
+	if (IS_ERR(us))
+		return PTR_ERR(us);
+	if (rndis_opts->ifunction[0]) {
+		rndis_control_intf.iInterface = 0;
+		rndis_data_intf.iInterface = 0;
+		rndis_iad_descriptor.iFunction = us[0].id;
+	}
+	else {
+		rndis_control_intf.iInterface = us[0].id;
+		rndis_data_intf.iInterface = us[1].id;
+		rndis_iad_descriptor.iFunction = us[2].id;
+	}
+
+	if (customClass)    rndis_control_intf.bInterfaceClass = rndis_opts->class;
+	if (customSubclass) rndis_control_intf.bInterfaceSubClass = rndis_opts->subclass;
+	if (customProtocol) rndis_control_intf.bInterfaceProtocol = rndis_opts->protocol;
 
 	/* allocate instance-specific interface IDs */
 	status = usb_interface_id(c, f);
@@ -878,6 +902,10 @@ USB_ETHER_CONFIGFS_ITEM_ATTR_U8_RW(rndis, subclass);
 /* f_rndis_opts_protocol */
 USB_ETHER_CONFIGFS_ITEM_ATTR_U8_RW(rndis, protocol);
 
+/* f_rndis_opts_iFunction */
+USB_ETHER_CONFIGFS_ITEM_ATTR_STRING(rndis, ifunction);
+
+
 static struct configfs_attribute *rndis_attrs[] = {
 	&rndis_opts_attr_dev_addr,
 	&rndis_opts_attr_host_addr,
@@ -886,6 +914,7 @@ static struct configfs_attribute *rndis_attrs[] = {
 	&rndis_opts_attr_class,
 	&rndis_opts_attr_subclass,
 	&rndis_opts_attr_protocol,
+	&rndis_opts_attr_ifunction,
 	NULL,
 };
 
